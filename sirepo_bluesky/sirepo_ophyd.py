@@ -7,6 +7,8 @@ import time
 from collections import deque, namedtuple
 from pathlib import Path
 
+import numpy as np
+
 import inflection
 from event_model import compose_resource
 from ophyd import Component as Cpt
@@ -67,6 +69,13 @@ class DeviceWithJSONData(Device):
 
 
 class SirepoWatchpoint(DeviceWithJSONData):
+
+    cx = Cpt(Signal, kind="hinted")
+    cy = Cpt(Signal, kind="hinted")
+    sx = Cpt(Signal, kind="hinted")
+    sy = Cpt(Signal, kind="hinted")
+    density = Cpt(Signal, kind="hinted")
+
     image = Cpt(ExternalFileReference, kind="normal")
     shape = Cpt(Signal)
     mean = Cpt(Signal, kind="hinted")
@@ -99,6 +108,45 @@ class SirepoWatchpoint(DeviceWithJSONData):
                 f"Unknown simulation type: {sim_type}\n"
                 f"Allowed simulation types: {allowed_sim_types}"
             )
+
+
+    def get_beam_stats(self, im, extents, thresh=np.exp(-2)):
+
+        if not im.sum() > 0: return np.nan, np.nan, np.nan, np.nan, np.nan
+
+        W = im.copy()
+        W[W < thresh * W.max()] = 0
+
+        nx, ny = im.shape
+        X, Y = np.meshgrid(np.linspace(*extents[0],nx), np.linspace(*extents[1],ny), indexing='ij')
+
+        cx = np.sum(W * X) / np.sum(W)
+        cy = np.sum(W * Y) / np.sum(W)
+        
+        sx = np.sqrt(np.sum(W * np.square(X-cx)) / np.sum(W))
+        sy = np.sqrt(np.sum(W * np.square(Y-cy)) / np.sum(W))
+
+        return cx, cy, sx, sy, im.sum()
+
+    def get_beam_stats(self, im, extents, q_beam=0.9):
+
+        q  = np.linspace(0,1,256)
+        dq = np.gradient(q).mean()
+        nq = int(q_beam / dq)
+
+        nx, ny = im.shape
+        he, ve = extents 
+
+        ncs1 = np.interp(q, np.cumsum(im.sum(axis=0))/im.sum(), np.arange(ny))
+        ncs0 = np.interp(q, np.cumsum(im.sum(axis=1))/im.sum(), np.arange(nx))
+
+        is0 = (ncs0[nq:] - ncs0[:-nq]).argmin()
+        is1 = (ncs1[nq:] - ncs1[:-nq]).argmin()
+
+        xb = np.interp([ncs0[is0], ncs0[is0+nq]], np.arange(nx), np.linspace(*he, nx))
+        yb = np.interp([ncs1[is1], ncs1[is1+nq]], np.arange(ny), np.linspace(*ve, ny))
+
+        return np.mean(xb), np.mean(yb), np.diff(xb)[0], np.diff(yb)[0], im.sum()
 
     def trigger(self, *args, **kwargs):
         logger.debug(f"Custom trigger for {self.name}")
@@ -145,6 +193,16 @@ class SirepoWatchpoint(DeviceWithJSONData):
             self._resource_document["resource_kwargs"]["histogram_bins"] = nbins
 
         def update_components(_data):
+
+            cx, cy, sx, sy, pixsum = self.get_beam_stats(_data['data'][::-1], 
+                                           (1e4*np.array(_data["horizontal_extent"]),
+                                            1e4*np.array(_data["vertical_extent"])))
+            self.cx.put(cx)
+            self.cy.put(cy)
+            self.sx.put(sx)
+            self.sy.put(sy)
+            self.density.put(pixsum/(sx*sy))
+
             self.shape.put(_data["shape"])
             self.mean.put(_data["mean"])
             self.photon_energy.put(_data["photon_energy"])

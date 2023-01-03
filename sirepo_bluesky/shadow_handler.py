@@ -78,7 +78,7 @@ def read_shadow_file(filename, histogram_bins=None):
     # This returns a list of N values (N=number of rays)
     photon_energy_list = Shadow.ShadowTools.getshcol(filename, col=11)  # 11=Energy [eV]
     photon_energy = np.mean(photon_energy_list)
-
+    
     return {'data': data,
             'shape': data.shape,
             'mean': np.mean(data),
